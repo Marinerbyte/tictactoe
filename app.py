@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import io
+import random
 import requests
 import websocket
 import psycopg2
@@ -36,7 +37,7 @@ def init_db():
         print(">> Database Ready.")
     except Exception as e: print(f"DB Error: {e}")
 
-def add_win(username):
+def add_win(username, points=50):
     try:
         conn = get_db()
         c = conn.cursor()
@@ -45,10 +46,10 @@ def add_win(username):
         data = c.fetchone()
         if data:
             c.execute(f"UPDATE players SET wins={ph}, score={ph} WHERE username={ph}", 
-                      (data[0]+1, data[1]+50, username))
+                      (data[0]+1, data[1]+points, username))
         else:
-            c.execute(f"INSERT INTO players (username, wins, score) VALUES ({ph}, 1, 50)", 
-                      (username,))
+            c.execute(f"INSERT INTO players (username, wins, score) VALUES ({ph}, 1, {ph})", 
+                      (username, points))
         conn.commit()
         conn.close()
     except Exception as e: print(f"Score Error: {e}")
@@ -56,7 +57,7 @@ def add_win(username):
 init_db()
 
 # =============================================================================
-# 2. BOT LOGIC & CONNECTION
+# 2. BOT CONNECTION LOGIC
 # =============================================================================
 
 BOT = {
@@ -71,7 +72,6 @@ def log(msg, type="sys"):
     LOGS.append({"time": timestamp, "msg": msg, "type": type})
     if len(LOGS) > 50: LOGS.pop(0)
 
-# --- WebSocket Events ---
 def on_message(ws, message):
     try:
         data = json.loads(message)
@@ -86,7 +86,6 @@ def on_message(ws, message):
             else:
                 log(f"Login Failed: {data.get('reason')}", "err")
                 BOT["connected"] = False
-
     except Exception as e: print(f"WS Error: {e}")
 
 def on_error(ws, error): log(f"Error: {error}", "err")
@@ -121,69 +120,150 @@ def send_msg(text, type="text", url=""):
         except: pass
 
 # =============================================================================
-# 3. TIC-TAC-TOE ENGINE (SINGLE GAME)
+# 3. GAME ENGINE (PVP & BOT MODES)
 # =============================================================================
 
 GAME = {
     "active": False,
+    "mode": None,  # 'pvp' or 'bot'
     "board": [" "] * 9,
     "turn": "X",
-    "p1": None, "p2": None
+    "p1": None, 
+    "p2": None
 }
 
 def game_engine(user, msg):
     msg = msg.strip().lower()
     global GAME
 
-    # --- COMMANDS ---
+    # --- HELP ---
     if msg == "!help":
-        send_msg("🎮 **TIC-TAC-TOE COMMANDS**\n!start -> Start Game\n!join -> Join Game\n1-9 -> Make Move")
+        help_text = (
+            "🎮 **COMMAND LIST**\n"
+            "• `!start` -> Start 2-Player Game\n"
+            "• `!start bot` -> Play against CPU\n"
+            "• `!join` -> Join a PvP Game\n"
+            "• `1-9` -> Make a move"
+        )
+        send_msg(help_text)
 
-    elif msg == "!start":
-        if GAME["active"]: return send_msg(f"⚠ Game chal rahi hai: {GAME['p1']} vs {GAME['p2'] or '?'}")
-        GAME = {"active": True, "board": [" "] * 9, "turn": "X", "p1": user, "p2": None}
+    # --- START GAME ---
+    elif msg.startswith("!start"):
+        if GAME["active"]: 
+            return send_msg(f"⚠ Game in progress: {GAME['p1']} vs {GAME['p2'] or 'Waiting...'}")
+        
+        mode = "bot" if "bot" in msg else "pvp"
+        
+        GAME = {
+            "active": True, "mode": mode,
+            "board": [" "] * 9, "turn": "X",
+            "p1": user, 
+            "p2": "🤖 TitanBot" if mode == "bot" else None
+        }
+        
         send_board()
-        send_msg(f"🎮 **NEW GAME!**\nPlayer X: {user}\nWaiting for Player 2... (Type !join)")
+        if mode == "pvp":
+            send_msg(f"🎮 **PVP MODE STARTED**\nPlayer X: {user}\nWaiting for Player 2... (Type !join)")
+        else:
+            send_msg(f"🤖 **BOT MODE STARTED**\nPlayer X: {user} vs TitanBot (O)\nYour turn! Type 1-9")
 
+    # --- JOIN (Only for PvP) ---
     elif msg == "!join":
-        if not GAME["active"]: return send_msg("Koi game nahi hai. !start likho.")
-        if GAME["p2"]: return send_msg("Room Full!")
-        if user == GAME["p1"]: return send_msg("Khud se nahi khel sakte.")
+        if not GAME["active"]: return send_msg("⚠ No active game. Type !start")
+        if GAME["mode"] == "bot": return send_msg("⚠ This is a Bot game. You cannot join.")
+        if GAME["p2"]: return send_msg("⚠ Room is full!")
+        if user == GAME["p1"]: return send_msg("⚠ You cannot play against yourself.")
         
         GAME["p2"] = user
-        send_msg(f"⚔ **MATCH ON!**\n{user} (O) joined!\n{GAME['p1']} (X) ki baari hai.")
+        send_msg(f"⚔ **MATCH ON!**\n{user} (O) joined!\n{GAME['p1']} (X) is up.")
 
+    # --- MAKE A MOVE ---
     elif msg.isdigit() and GAME["active"]:
-        if not GAME["p2"]: return send_msg("Player 2 ka wait karo!")
-        
         move = int(msg)
         if move < 1 or move > 9: return
 
-        # Identify Player
+        # 1. CHECK PLAYER TURN
         curr_player = GAME["p1"] if GAME["turn"] == "X" else GAME["p2"]
-        if user != curr_player: return # Not your turn
-
-        # Check Slot
-        idx = move - 1
-        if GAME["board"][idx] != " ": return send_msg("⚠ Blocked!")
-
-        # Execute Move
-        GAME["board"][idx] = GAME["turn"]
-
-        # Check Win/Draw
-        winner = check_win()
-        if winner:
-            GAME["active"] = False
-            send_board(win_line=winner['line'])
-            add_win(user) # Save to DB
-            send_msg(f"🏆 **VICTORY!**\n{user} Jeet gaya! (+50 Pts)")
-        elif " " not in GAME["board"]:
-            GAME["active"] = False
-            send_board()
-            send_msg("🤝 **DRAW!** Barabari.")
+        
+        # If playing against bot, ensure it's P1's turn
+        if GAME["mode"] == "bot":
+            if user != GAME["p1"]: return # Only P1 can command in bot mode
+            if GAME["turn"] == "O": return # Wait for bot
         else:
+            # PvP check
+            if user != curr_player: return
+
+        # 2. CHECK SLOT VALIDITY
+        idx = move - 1
+        if GAME["board"][idx] != " ": return send_msg("⚠ Spot taken!")
+
+        # 3. EXECUTE PLAYER MOVE
+        GAME["board"][idx] = GAME["turn"]
+        
+        if process_turn(user): return # If game ended, stop here
+
+        # 4. BOT MOVE LOGIC (If in Bot Mode)
+        if GAME["mode"] == "bot" and GAME["active"]:
+            GAME["turn"] = "O"
+            threading.Timer(1.0, execute_bot_move).start() # Delay for realism
+        else:
+            # Switch turn for PvP
             GAME["turn"] = "O" if GAME["turn"] == "X" else "X"
             send_board()
+
+def execute_bot_move():
+    global GAME
+    if not GAME["active"]: return
+
+    # --- SIMPLE AI LOGIC ---
+    b = GAME["board"]
+    available = [i for i, x in enumerate(b) if x == " "]
+    
+    if not available: return # Should not happen handled by draw check
+
+    # 1. Try to Win
+    move = find_best_move(b, "O")
+    # 2. Block Player
+    if move is None: move = find_best_move(b, "X")
+    # 3. Take Center
+    if move is None and 4 in available: move = 4
+    # 4. Random
+    if move is None: move = random.choice(available)
+
+    GAME["board"][move] = "O"
+    
+    if process_turn("TitanBot"): return
+    
+    GAME["turn"] = "X"
+    send_board()
+
+def find_best_move(board, symbol):
+    # Check if a move leads to a win
+    wins = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
+    for x, y, z in wins:
+        if board[x] == symbol and board[y] == symbol and board[z] == " ": return z
+        if board[x] == symbol and board[z] == symbol and board[y] == " ": return y
+        if board[y] == symbol and board[z] == symbol and board[x] == " ": return x
+    return None
+
+def process_turn(current_user):
+    # Check Win or Draw after a move
+    winner = check_win()
+    if winner:
+        GAME["active"] = False
+        send_board(win_line=winner['line'])
+        if GAME["mode"] == "bot" and current_user == "TitanBot":
+             send_msg(f"🤖 **TitanBot WINS!** Better luck next time.")
+        else:
+            add_win(current_user)
+            send_msg(f"🏆 **VICTORY!**\n{current_user} WINS! (+50 Pts)")
+        return True
+    elif " " not in GAME["board"]:
+        GAME["active"] = False
+        send_board()
+        send_msg("🤝 **DRAW!** Good Game.")
+        return True
+    return False
 
 def check_win():
     b = GAME["board"]
@@ -200,7 +280,7 @@ def send_board(win_line=""):
     send_msg("", type="image", url=url)
 
 # =============================================================================
-# 4. FLASK ROUTES & IMAGE GENERATOR
+# 4. FLASK ROUTES
 # =============================================================================
 
 @app.route('/')
@@ -231,21 +311,18 @@ def disconnect():
 @app.route('/logs')
 def get_logs(): return jsonify({"logs": LOGS, "connected": BOT["connected"]})
 
-# --- THE MAIN IMAGE GENERATOR ---
 @app.route('/render')
 def render():
     try:
         board_str = request.args.get('b', '_________')
         win_line = request.args.get('w', '')
         
-        # Load Assets
         try:
             base = Image.open("board.png").convert("RGBA")
             x_img = Image.open("x.png").convert("RGBA")
             o_img = Image.open("o.png").convert("RGBA")
         except: return "Missing Assets! Run create_assets.py", 500
 
-        # Mapping Logic (900x900 Board / 300x300 Cells)
         for i, char in enumerate(board_str):
             if char in ['X', 'O']:
                 row, col = i // 3, i % 3
@@ -253,7 +330,6 @@ def render():
                 symbol = x_img if char == 'X' else o_img
                 base.paste(symbol, (x, y), symbol)
 
-        # Draw Win Line
         if win_line:
             draw = ImageDraw.Draw(base)
             idx = [int(k) for k in win_line.split(',')]
@@ -271,10 +347,6 @@ def render():
         img_io.seek(0)
         return send_file(img_io, mimetype='image/png')
     except Exception as e: return str(e), 500
-
-# =============================================================================
-# 5. DASHBOARD UI
-# =============================================================================
 
 HTML_DASHBOARD = """
 <!DOCTYPE html>
@@ -296,7 +368,7 @@ HTML_DASHBOARD = """
 </head>
 <body>
     <div class="box">
-        <h2 style="text-align:center; margin-top:0;">⭕ TITAN TTT ❌</h2>
+        <h2 style="text-align:center; margin-top:0;">⭕ TITAN BOT ❌</h2>
         <div id="status" class="status" style="color:red">OFFLINE</div>
         
         <input id="u" placeholder="Bot Username">
