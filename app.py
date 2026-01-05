@@ -291,7 +291,7 @@ def game_engine(user, msg):
             if find_user_game_unsafe(user): 
                 return send_msg(f"⚠ {user}, finish current game!")
         
-        mode = "bot" if "bot" in msg else "pvp"
+        mode = "bot" if "b" in msg else "pvp"
         bet = 0
         if "bet" in msg:
             try: bet = int(msg.split("bet")[1].split()[0])
