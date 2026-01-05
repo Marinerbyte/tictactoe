@@ -275,7 +275,7 @@ def game_engine(user, msg):
     
     # --- COMMANDS ---
     if msg == "!help":
-        send_msg("🎮 **COMMANDS:**\n• `!start`\n• `!start bet 100`\n• `!start bot`\n• `!join <host>`\n• `!score`\n• `1-9` (Move)")
+        send_msg("🎮 **COMMANDS:**\n• `!start`\n• `!start bet 100`\n• `!sg`\n• `!join <host>`\n• `!score`\n• `1-9` (Move)")
         return
 
     if msg == "!score":
