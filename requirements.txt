@@ -1,6 +1,6 @@
 Flask
-Pillow
-requests
 websocket-client
-gunicorn
+Pillow
 psycopg2-binary
+requests
+gunicorn
